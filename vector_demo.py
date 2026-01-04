@@ -3,11 +3,16 @@ import pymongo
 from voyageai import Client as VoyageClient
 import openai
 import os
+import dotenv
+
+# This looks for a .env file in the current directory
+dotenv.load_dotenv()
 
 # Initialize MongoDB connection
-MONGO_CONNECTION_STRING = os.environ.get('CLUSTER1_URI')
+MONGO_CONNECTION_STRING = os.getenv('CLUSTER1_URI')
+
 client = pymongo.MongoClient(MONGO_CONNECTION_STRING)
-db = client.uhg_demo  
+db = client.rag_demo  
 collection = db.vectors_demo_rag  # New collection for RAG pipeline
 
 # Initialize API clients
@@ -30,7 +35,7 @@ health_docs = [
 
 # Insert documents with embeddings
 for doc in health_docs:
-    response = voyage_client.embed([doc], model="voyage-lite-02-instruct")
+    response = voyage_client.embed([doc], model="voyage-3.5-lite")
     embedding = response.embeddings[0]
     result = collection.insert_one({
         "text": doc,
@@ -40,23 +45,29 @@ for doc in health_docs:
 
 # Step 2: Function for performing vector search in MongoDB
 def search_similar_docs(query_embedding, top_k=3):
-    pipeline = [
-        {
-            "$vectorSearch": {
-                "queryVector": query_embedding,
-                "path": "embedding",
-                "numCandidates": 10,
-                "limit": top_k,
-                "index": "default"  # Make sure your MongoDB collection has a vector index
+    try:
+        pipeline = [
+            {
+                "$vectorSearch": {
+                    "queryVector": query_embedding,
+                    "path": "embedding",
+                    "numCandidates": 10,
+                    "limit": top_k,
+                    "index": "vector_index"  # Make sure your MongoDB collection has a vector index named 'vector_index'
+                }
             }
-        }
-    ]
-    return list(collection.aggregate(pipeline))
+        ]
+        return list(collection.aggregate(pipeline))
+    except Exception as e:
+        print(f"Vector search failed: {e}")
+        print("Falling back to simple text search...")
+        # Fallback to simple find operation
+        return list(collection.find().limit(top_k))
 
 # Step 3: Full RAG response generation function using GPT-4
 def generate_rag_response(user_query):
     # Get the query embedding
-    query_response = voyage_client.embed([user_query], model="voyage-lite-02-instruct")
+    query_response = voyage_client.embed([user_query], model="voyage-3.5-lite")
     query_embedding = query_response.embeddings[0]
 
     # Retrieve top matching documents from MongoDB
@@ -66,9 +77,9 @@ def generate_rag_response(user_query):
     retrieved_texts = "\n\n".join([doc["text"] for doc in retrieved_docs])
     prompt = f"Using the following healthcare information, answer the patient's question:\n\n{retrieved_texts}\n\nQuestion: {user_query}"
 
-    # Generate response using OpenAI GPT-4 with the new client syntax
+    # Generate response using OpenAI GPT-4o-mini with the new client syntax
     response = openai_client.chat.completions.create(
-        model="gpt-4",  # You can switch to "gpt-3.5-turbo" for a cheaper alternative
+        model="gpt-4o-mini",  # Corrected model name
         messages=[
             {"role": "system", "content": "You are a helpful healthcare assistant."},
             {"role": "user", "content": prompt}
